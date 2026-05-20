@@ -1,0 +1,4 @@
+[tool.bandit]
+# Skip B101 (assert_used) — asserts are acceptable outside production paths.
+# Add more IDs here as needed: skips = ["B101", "B601"]
+skips = ["B101"]

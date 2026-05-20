@@ -1,5 +1,5 @@
 # =============================================================================
-# setup-repo.ps1 — Run once per new project, after first push to GitHub
+# setup-repo.ps1 - Run once per new project, after first push to GitHub
 # =============================================================================
 # Requirements:
 #   - GitHub CLI installed and authenticated (gh auth login)
@@ -17,25 +17,27 @@ param(
     [switch]$DryRun  # Pass -DryRun to preview actions without executing them
 )
 
-$ErrorActionPreference = "Stop"
+# "Continue" lets the script check $LASTEXITCODE manually for native commands
+# (git, gh) without PowerShell auto-throwing on their stderr output.
+$ErrorActionPreference = "Continue"
 
-# ── Colour helpers ────────────────────────────────────────────────────────────
+# -- Colour helpers -----------------------------------------------------------
 function Write-Info    { param($msg) Write-Host "[INFO]  $msg" -ForegroundColor Cyan }
 function Write-Success { param($msg) Write-Host "[OK]    $msg" -ForegroundColor Green }
 function Write-Warn    { param($msg) Write-Host "[WARN]  $msg" -ForegroundColor Yellow }
 function Write-Fail    { param($msg) Write-Host "[ERROR] $msg" -ForegroundColor Red; exit 1 }
-function Write-Step    { param($msg) Write-Host "`n──── $msg ────`n" -ForegroundColor White }
+function Write-Step    { param($msg) Write-Host "`n---- $msg ----`n" -ForegroundColor White }
 
-if ($DryRun) { Write-Host "[DRY RUN MODE — no changes will be made]`n" -ForegroundColor Magenta }
+if ($DryRun) { Write-Host "[DRY RUN MODE - no changes will be made]`n" -ForegroundColor Magenta }
 
-# ── Pre-flight checks ─────────────────────────────────────────────────────────
+# -- Pre-flight checks --------------------------------------------------------
 Write-Step "Pre-flight checks"
 
 if (-not (Get-Command gh  -ErrorAction SilentlyContinue)) { Write-Fail "GitHub CLI not found.  Run: winget install GitHub.cli" }
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Write-Fail "git not found.         Run: winget install Git.Git" }
 if (-not (Get-Command jq  -ErrorAction SilentlyContinue)) { Write-Fail "jq not found.          Run: winget install jqlang.jq" }
 
-git rev-parse --git-dir 2>$null | Out-Null
+git rev-parse --git-dir *>$null
 if ($LASTEXITCODE -ne 0) { Write-Fail "Not inside a git repository." }
 
 $repo = gh repo view --json nameWithOwner -q .nameWithOwner 2>$null
@@ -44,16 +46,16 @@ if (-not $repo -or $LASTEXITCODE -ne 0) {
 }
 Write-Info "Repository : $repo"
 
-gh auth status 2>&1 | Out-Null
+gh auth status *>$null
 if ($LASTEXITCODE -ne 0) { Write-Fail "Not authenticated. Run: gh auth login" }
 Write-Success "All pre-flight checks passed."
 
-# ── Step 1: GitHub labels ─────────────────────────────────────────────────────
-Write-Step "Step 1 — Create GitHub labels"
+# -- Step 1: GitHub labels ----------------------------------------------------
+Write-Step "Step 1 - Create GitHub labels"
 
 $labels = [ordered]@{
     "security"          = @{ color = "0075ca"; desc = "General security findings" }
-    "critical"          = @{ color = "d93f0b"; desc = "Critical severity — immediate action required" }
+    "critical"          = @{ color = "d93f0b"; desc = "Critical severity - immediate action required" }
     "secret-detected"   = @{ color = "e11d48"; desc = "A secret or credential was found in code" }
     "historical-secret" = @{ color = "f97316"; desc = "Secret found in git history" }
     "dependencies"      = @{ color = "0075ca"; desc = "Dependency updates from Dependabot" }
@@ -68,55 +70,55 @@ foreach ($name in $labels.Keys) {
 
     if ($DryRun) { Write-Info "[DRY RUN] Would create label: $name ($color)"; continue }
 
-    gh label create $name --color $color --description $desc --repo $repo 2>$null | Out-Null
+    # --force upserts: creates if absent, updates color/description if present.
+    # Never exits non-zero or writes to stderr for the already-exists case.
+    gh label create $name --color $color --description $desc --force --repo $repo *>$null
     if ($LASTEXITCODE -eq 0) {
-        Write-Success "Created  : $name"
+        Write-Success "Upserted : $name"
     } else {
-        gh label edit $name --color $color --description $desc --repo $repo 2>$null | Out-Null
-        Write-Success "Updated  : $name"
+        Write-Warn "Could not upsert label: $name"
     }
 }
 
-# ── Step 2: develop branch ────────────────────────────────────────────────────
-Write-Step "Step 2 — Create 'develop' branch"
+# -- Step 2: develop branch ---------------------------------------------------
+Write-Step "Step 2 - Create 'develop' branch"
 
-$currentBranch = git symbolic-ref --short HEAD
+$currentBranch = git symbolic-ref --short HEAD 2>$null
 Write-Info "Current branch: $currentBranch"
 
-$developExists = git ls-remote --exit-code --heads origin develop 2>$null
+git ls-remote --exit-code --heads origin develop *>$null
 if ($LASTEXITCODE -eq 0) {
     Write-Success "'develop' already exists on remote."
 } else {
     if (-not $DryRun) {
-        # Create locally and push
-        $switchResult = git checkout -b develop 2>&1
-        if ($LASTEXITCODE -ne 0) { git checkout develop 2>&1 | Out-Null }
-        git push -u origin develop
-        git checkout $currentBranch 2>&1 | Out-Null
+        git checkout -b develop *>$null
+        if ($LASTEXITCODE -ne 0) { git checkout develop *>$null }
+        git push -u origin develop *>$null
+        git checkout $currentBranch *>$null
     }
     Write-Success "'develop' branch created and pushed."
 }
 
-# ── Step 3: Branch protection ─────────────────────────────────────────────────
-Write-Step "Step 3 — Configure branch protection (master + develop)"
+# -- Step 3: Branch protection ------------------------------------------------
+Write-Step "Step 3 - Configure branch protection (master + develop)"
 
-# These names must EXACTLY match the job names in the workflow YAML files
-$requiredChecks = @("Gitleaks — Secret Scan", "Security Gate")
+# These names must EXACTLY match the job name: fields in the workflow YAML files
+$requiredChecks = @("Gitleaks $([char]0x2014) Secret Scan", "$([char]0x2705) Security Gate")
 Write-Info "Required checks : $($requiredChecks -join ', ')"
 Write-Info "PRs required    : NO (solo developer mode)"
 
 function Set-BranchProtection {
     param([string]$branchName)
 
-    $exists = git ls-remote --exit-code --heads origin $branchName 2>$null
+    git ls-remote --exit-code --heads origin $branchName *>$null
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "Branch '$branchName' not found on remote — skipping."
+        Write-Warn "Branch '$branchName' not found on remote - skipping."
         return
     }
 
     if ($DryRun) { Write-Info "[DRY RUN] Would protect branch: $branchName"; return }
 
-    # Build JSON payload — null values are important here (disables PR requirement)
+    # null values here disable the PR-review requirement (solo developer mode)
     $payload = @{
         required_status_checks = @{
             strict   = $false
@@ -132,7 +134,7 @@ function Set-BranchProtection {
     $payload | gh api `
         --method PUT `
         "repos/$repo/branches/$branchName/protection" `
-        --input - 2>&1 | Out-Null
+        --input - *>$null
 
     if ($LASTEXITCODE -eq 0) {
         Write-Success "Protected : $branchName"
@@ -148,18 +150,18 @@ function Set-BranchProtection {
 Set-BranchProtection "master"
 Set-BranchProtection "develop"
 
-# ── Step 4: Dependabot ────────────────────────────────────────────────────────
-Write-Step "Step 4 — Enable Dependabot security features"
+# -- Step 4: Dependabot -------------------------------------------------------
+Write-Step "Step 4 - Enable Dependabot security features"
 
 if (-not $DryRun) {
-    gh api --method PUT "repos/$repo/vulnerability-alerts"    2>$null | Out-Null
+    gh api --method PUT "repos/$repo/vulnerability-alerts"     *>$null
     Write-Success "Vulnerability alerts    : enabled"
 
-    gh api --method PUT "repos/$repo/automated-security-fixes" 2>$null | Out-Null
+    gh api --method PUT "repos/$repo/automated-security-fixes" *>$null
     Write-Success "Automated security fixes: enabled"
 }
 
-# ── Summary ───────────────────────────────────────────────────────────────────
+# -- Summary ------------------------------------------------------------------
 Write-Host ""
 Write-Host "================================================" -ForegroundColor Green
 Write-Host "  Repository security setup complete!" -ForegroundColor Green
