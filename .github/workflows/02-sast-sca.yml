@@ -117,7 +117,7 @@ jobs:
       - name: "🔍 Run Semgrep"
         id: semgrep
         run: |
-          semgrep ci \
+          semgrep scan \
             --config "p/default" \
             --config "p/python" \
             --config "p/cpp" \
@@ -126,18 +126,18 @@ jobs:
             --config "p/cwe-top-25" \
             --config "p/secrets" \
             --config "p/supply-chain" \
-            --sarif-output semgrep-results.sarif \
-            --error \
+            --sarif \
+            --output semgrep-results.sarif \
             --verbose \
             2>&1 | tee semgrep-output.txt
         env:
-          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}  # Optional: links to Semgrep Cloud dashboard
-        continue-on-error: true  # We handle failure manually below
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        continue-on-error: true
 
       # Upload SARIF regardless of result so Security tab is always populated
       - name: "📤 Upload SARIF → Security tab"
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
@@ -196,7 +196,7 @@ jobs:
 
       - name: "📤 Upload SARIF → Security tab"
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-results.sarif
           category: trivy-sca

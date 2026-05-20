@@ -140,7 +140,7 @@ jobs:
       # queries: security-and-quality covers both security vulnerabilities AND
       # reliability/quality issues (null dereferences, dead code, etc.)
       - name: "🧬 Initialize CodeQL"
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
@@ -160,21 +160,20 @@ jobs:
       #       cmake --build build
       #
       - name: "🔨 Autobuild"
-        uses: github/codeql-action/autobuild@v3
+        uses: github/codeql-action/autobuild@v4
 
       # ── 5. Run analysis ─────────────────────────────────────────────────────
       - name: "🔍 Run CodeQL analysis"
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@v4
         with:
           category: "codeql-${{ matrix.language }}"
-          # Upload results directly to Security tab
-          upload: true
+          upload: false          # ← add this line
           output: "codeql-results-${{ matrix.language }}.sarif"
 
       # ── 6. Upload SARIF explicitly (belt-and-suspenders) ────────────────────
       - name: "📤 Upload SARIF → Security tab"
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: "codeql-results-${{ matrix.language }}.sarif"
           category: "codeql-${{ matrix.language }}"

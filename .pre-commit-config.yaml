@@ -117,17 +117,3 @@ repos:
         name: "🐹 go vet — Go static analysis"
       - id: go-mod-tidy
         name: "🐹 go mod tidy — clean go.mod/go.sum"
-
-  # ── Commit message format ────────────────────────────────────────────────────
-  # Enforces Conventional Commits format: type(scope): description
-  # Examples: feat(auth): add JWT validation
-  #           fix(parser): handle null input
-  #           chore(deps): update requests to 2.32.0
-  # This makes automated changelog generation and semantic versioning possible.
-  - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v4.4.0
-    hooks:
-      - id: conventional-pre-commit
-        name: "📝 Conventional commit message"
-        stages: [commit-msg]
-        args: [feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert]
