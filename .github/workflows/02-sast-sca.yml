@@ -1,0 +1,248 @@
+name: "🛡️ SAST & SCA — Semgrep + Trivy"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN IT RUNS:
+#   • Every push to feature/*, develop, master
+#   • Every PR targeting develop or master
+#   • Weekly schedule (Sunday 02:00 UTC) — catches newly published CVEs even
+#     when no code was changed
+#
+# WHAT IT DOES:
+#   Semgrep (SAST):
+#     • Static code analysis for C++, Python, and Go
+#     • Rules: OWASP Top 10, CWE Top 25, language-specific security patterns,
+#       plus an extra secret-detection pass as a second layer behind Gitleaks
+#     • Results → SARIF → GitHub Security tab
+#
+#   Trivy (SCA):
+#     • Scans all dependency manifests in the repo:
+#         Python  → requirements.txt, Pipfile.lock, poetry.lock, pyproject.toml
+#         Go      → go.mod, go.sum
+#         C++     → conanfile.txt/py, vcpkg.json
+#         General → Dockerfile, docker-compose*, *.tf (IaC misconfigs)
+#     • Detects CVEs against the NVD and OSV databases
+#     • Also runs its own secret scanner as a tertiary layer
+#     • Results → SARIF → GitHub Security tab
+#
+# SEVERITY THRESHOLDS (branch-aware):
+#   feature/*  →  CRITICAL only blocks the pipeline  (you may be mid-work)
+#   develop    →  HIGH + CRITICAL block the pipeline
+#   master     →  HIGH + CRITICAL block the pipeline  (strictest gate)
+#   PRs        →  same as target branch rules
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches:
+      - master
+      - develop
+      - "feature/**"
+  pull_request:
+    branches:
+      - master
+      - develop
+  schedule:
+    - cron: "0 2 * * 0"  # Every Sunday at 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  issues: write
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 1 — Determine severity threshold based on branch
+  # This single step drives blocking behaviour for ALL subsequent jobs
+  # ═══════════════════════════════════════════════════════════════════════════
+  set-threshold:
+    name: "🎚️ Set severity threshold"
+    runs-on: ubuntu-latest
+    outputs:
+      trivy_severity: ${{ steps.threshold.outputs.trivy_severity }}
+      trivy_exit_code: ${{ steps.threshold.outputs.trivy_exit_code }}
+      semgrep_fail: ${{ steps.threshold.outputs.semgrep_fail }}
+      branch_label: ${{ steps.threshold.outputs.branch_label }}
+
+    steps:
+      - name: "Compute thresholds"
+        id: threshold
+        run: |
+          REF="${{ github.ref }}"
+          TARGET="${{ github.base_ref }}"  # For PRs: the target branch
+
+          # Use target branch for PRs, current ref for pushes
+          BRANCH="${TARGET:-${REF#refs/heads/}}"
+
+          if [[ "$BRANCH" == "master" || "$BRANCH" == "develop" ]]; then
+            echo "trivy_severity=CRITICAL,HIGH"  >> "$GITHUB_OUTPUT"
+            echo "trivy_exit_code=1"             >> "$GITHUB_OUTPUT"
+            echo "semgrep_fail=true"             >> "$GITHUB_OUTPUT"
+            echo "branch_label=strict"           >> "$GITHUB_OUTPUT"
+            echo "📋 Branch: $BRANCH → threshold: HIGH + CRITICAL (strict mode)"
+          else
+            # feature/* branches
+            echo "trivy_severity=CRITICAL"       >> "$GITHUB_OUTPUT"
+            echo "trivy_exit_code=1"             >> "$GITHUB_OUTPUT"
+            echo "semgrep_fail=true"             >> "$GITHUB_OUTPUT"
+            echo "branch_label=relaxed"          >> "$GITHUB_OUTPUT"
+            echo "📋 Branch: $BRANCH → threshold: CRITICAL only (relaxed mode)"
+          fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 2 — Semgrep SAST
+  # ═══════════════════════════════════════════════════════════════════════════
+  semgrep:
+    name: "🔎 Semgrep SAST"
+    runs-on: ubuntu-latest
+    needs: set-threshold
+    container:
+      image: semgrep/semgrep
+
+    steps:
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Semgrep scans the entire repo. Rulesets used:
+      #   p/default          → Semgrep maintained, broad coverage
+      #   p/python           → Python-specific security patterns
+      #   p/cpp              → C/C++ patterns (buffer issues, format strings, etc.)
+      #   p/golang           → Go-specific patterns
+      #   p/owasp-top-ten    → Maps findings to OWASP Top 10 categories
+      #   p/cwe-top-25       → Maps findings to CWE Top 25
+      #   p/secrets          → Extra secret/token detection (layer 3 after Gitleaks+Trivy)
+      #   p/supply-chain     → Detects dangerous dependency patterns
+      - name: "🔍 Run Semgrep"
+        id: semgrep
+        run: |
+          semgrep ci \
+            --config "p/default" \
+            --config "p/python" \
+            --config "p/cpp" \
+            --config "p/golang" \
+            --config "p/owasp-top-ten" \
+            --config "p/cwe-top-25" \
+            --config "p/secrets" \
+            --config "p/supply-chain" \
+            --sarif-output semgrep-results.sarif \
+            --error \
+            --verbose \
+            2>&1 | tee semgrep-output.txt
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}  # Optional: links to Semgrep Cloud dashboard
+        continue-on-error: true  # We handle failure manually below
+
+      # Upload SARIF regardless of result so Security tab is always populated
+      - name: "📤 Upload SARIF → Security tab"
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      # Fail the job if Semgrep found issues (respects the continue-on-error above)
+      - name: "🚫 Fail on findings"
+        if: steps.semgrep.outcome == 'failure'
+        run: |
+          echo "::error::Semgrep found security issues. See Security tab for details."
+          exit 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 3 — Trivy SCA (Software Composition Analysis)
+  # ═══════════════════════════════════════════════════════════════════════════
+  trivy-sca:
+    name: "📦 Trivy SCA — Dependency CVE Scan"
+    runs-on: ubuntu-latest
+    needs: set-threshold
+
+    steps:
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Download fresh vulnerability DB before scanning
+      - name: "🔄 Update Trivy DB"
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          download-db-only: true
+
+      # Full filesystem scan:
+      #   --scanners vuln     → CVE matching against known vulnerability databases
+      #   --scanners secret   → Trivy's own secret patterns (3rd layer)
+      #   --scanners misconfig → IaC / Dockerfile misconfigurations
+      #   --severity          → Set per branch by the set-threshold job
+      #   --exit-code 1       → Fail if findings at/above threshold severity
+      - name: "🔍 Trivy filesystem scan"
+        id: trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "vuln,secret,misconfig"
+          severity: ${{ needs.set-threshold.outputs.trivy_severity }}
+          exit-code: ${{ needs.set-threshold.outputs.trivy_exit_code }}
+          format: "sarif"
+          output: "trivy-results.sarif"
+          # Ignore unfixed CVEs (no patch available yet — nothing you can do)
+          ignore-unfixed: true
+          # Scan these manifest types
+          vuln-type: "os,library"
+        continue-on-error: true
+
+      - name: "📤 Upload SARIF → Security tab"
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-sca
+
+      # Also produce a human-readable table summary in the workflow log
+      - name: "📋 Print Trivy table report"
+        if: always()
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          scanners: "vuln,secret,misconfig"
+          severity: ${{ needs.set-threshold.outputs.trivy_severity }}
+          exit-code: "0"         # Don't double-fail here; just print
+          format: "table"
+          ignore-unfixed: true
+
+      - name: "🚫 Fail on findings"
+        if: steps.trivy.outcome == 'failure'
+        run: |
+          echo "::error::Trivy found vulnerabilities at or above the ${{ needs.set-threshold.outputs.trivy_severity }} threshold."
+          echo "::error::Branch mode: ${{ needs.set-threshold.outputs.branch_label }}"
+          exit 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # JOB 4 — Summary gate: blocks merge if any security job failed
+  # ═══════════════════════════════════════════════════════════════════════════
+  security-gate:
+    name: "✅ Security Gate"
+    runs-on: ubuntu-latest
+    needs: [semgrep, trivy-sca]
+    if: always()
+
+    steps:
+      - name: "Evaluate pipeline result"
+        run: |
+          SEMGREP="${{ needs.semgrep.result }}"
+          TRIVY="${{ needs.trivy-sca.result }}"
+
+          echo "Semgrep result : $SEMGREP"
+          echo "Trivy result   : $TRIVY"
+
+          if [[ "$SEMGREP" == "failure" || "$TRIVY" == "failure" ]]; then
+            echo "::error::Security gate FAILED. One or more scans found blocking issues."
+            echo "::error::Review the Security tab and the individual job logs above."
+            exit 1
+          fi
+
+          echo "✅ All security scans passed."

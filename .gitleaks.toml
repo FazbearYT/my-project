@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Gitleaks Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# This file fine-tunes Gitleaks' behaviour beyond its built-in 150+ rules.
+#
+# Purpose of this file:
+#   1. Define allowlists so Gitleaks doesn't alert on known-safe patterns
+#      (test data, example keys in docs, placeholders)
+#   2. Add custom rules for project-specific secret patterns you use
+#   3. Configure which file paths or commit patterns to skip entirely
+#
+# Full rule documentation:
+#   https://github.com/gitleaks/gitleaks?tab=readme-ov-file#configuration
+# ─────────────────────────────────────────────────────────────────────────────
+
+title = "Gitleaks — Custom Config"
+
+# ── GLOBAL ALLOWLIST ──────────────────────────────────────────────────────────
+# Patterns, paths, or commits that should NEVER trigger an alert.
+# Use these carefully — each entry is a deliberate bypass.
+
+[allowlist]
+  description = "Global allowlist — known-safe patterns"
+
+  # Regex patterns in secret values that are safe to ignore
+  regexes = [
+    # Common placeholder strings used in documentation and examples
+    '''(?i)(example|sample|placeholder|dummy|fake|test|demo)[\s_-]*(key|token|secret|password|api)''',
+    # Hex strings that are clearly hashes, not secrets (40-char SHA1, 64-char SHA256)
+    '''^[0-9a-f]{40}$''',
+    '''^[0-9a-f]{64}$''',
+  ]
+
+  # File paths to skip entirely (add test fixtures, generated code, etc.)
+  paths = [
+    # Pre-commit detect-secrets baseline (contains hashed findings, not real secrets)
+    '''.secrets.baseline''',
+    # Gitleaks own config (may contain example patterns)
+    '''.gitleaks.toml''',
+    # Lock files — Gitleaks occasionally false-positives on package hashes
+    '''package-lock\.json''',
+    '''yarn\.lock''',
+    '''Cargo\.lock''',
+    # Test data directories
+    '''tests?/fixtures?/''',
+    '''testdata/''',
+    '''__snapshots__/''',
+  ]
+
+  # Specific commit SHAs to skip (use when you've already rotated a cred
+  # and cleaned history but a scan still flags the now-harmless old commit)
+  # commits = [
+  #   "abc1234...",
+  # ]
+
+
+# ── CUSTOM RULES ─────────────────────────────────────────────────────────────
+# Add rules for secret patterns specific to your projects.
+# Format: [[rules]] block with id, description, regex, and severity.
+
+# Example: A custom internal API key format (uncomment and adapt)
+# [[rules]]
+#   id = "my-internal-api-key"
+#   description = "Internal service API key"
+#   regex = '''MY_SERVICE_[A-Z0-9]{32}'''
+#   severity = "critical"
+#   tags = ["api-key", "internal"]
+
+# Example: JWT secret environment variable names that signal a hardcoded value
+# [[rules]]
+#   id = "jwt-secret-hardcoded"
+#   description = "Hardcoded JWT secret value"
+#   regex = '''(?i)jwt[_\-\s]*secret[_\-\s]*=\s*["'][^"']{16,}["']'''
+#   severity = "critical"
+#   tags = ["jwt", "hardcoded"]

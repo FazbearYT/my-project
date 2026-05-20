@@ -1,0 +1,181 @@
+name: "🕵️ History Secret Scan — TruffleHog"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN IT RUNS:
+#   • Weekly schedule (Saturday 01:00 UTC) — silent background hygiene check
+#   • Manual trigger via workflow_dispatch — run anytime you want
+#
+# WHAT IT DOES:
+#   TruffleHog scans the ENTIRE git commit history of the repository looking for
+#   secrets that may have been accidentally committed and then "deleted" from the
+#   latest code — but still live in the history.
+#
+#   Why this matters:
+#     git rm secret.txt   ← the file is gone from HEAD, but every commit where
+#     git commit           ← it existed is still perfectly readable. Anyone who
+#                          ← clones your repo can see it with `git log -p`.
+#
+#   TruffleHog uses:
+#     • 700+ built-in detectors (AWS keys, GitHub tokens, Stripe, Twilio, etc.)
+#     • --only-verified flag: actually calls the service API to confirm the
+#       credential is still live before alerting. This cuts false-positive noise
+#       dramatically. A verified secret = definitely still active and dangerous.
+#
+#   On findings:
+#     • Job fails (pipeline shows red)
+#     • Detailed GitHub Issue is created listing each finding with guidance
+#
+# MANUAL TRIGGER TIP:
+#   Go to Actions → "History Secret Scan" → "Run workflow"
+#   Run this whenever you add a new project to the repo or after any suspected
+#   accidental commit.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: "0 1 * * 6"  # Every Saturday at 01:00 UTC
+  workflow_dispatch:
+    inputs:
+      verified_only:
+        description: "Only report verified (live) secrets? (false = report all detections)"
+        required: false
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  trufflehog-history:
+    name: "🕵️ TruffleHog — Full History Scan"
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Full history checkout ─────────────────────────────────────────────
+      - name: "📥 Checkout full repository history"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # MUST be 0 — partial checkout misses historical commits
+
+      # ── 2. TruffleHog scan ──────────────────────────────────────────────────
+      # Scans from the very first commit to HEAD.
+      # --only-verified: contacts the issuing service to confirm the key works.
+      #   Set to false via workflow_dispatch input if you want to see ALL
+      #   potential secrets including expired/invalid ones.
+      - name: "🔍 TruffleHog scan — entire git history"
+        id: trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: "./"
+          # No 'base' means: scan from first commit
+          # No 'head' means: scan to current HEAD
+          extra_args: >-
+            ${{ (github.event.inputs.verified_only != 'false') && '--only-verified' || '' }}
+            --json
+            --no-update
+        continue-on-error: true
+
+      # ── 3. Create GitHub Issue if findings exist ─────────────────────────────
+      - name: "🚨 Open issue — historical secrets found"
+        if: steps.trufflehog.outcome == 'failure'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const verifiedOnly = "${{ github.event.inputs.verified_only }}" !== "false";
+
+            const body = [
+              `## 🕵️ Historical Secret Scan — Findings Detected`,
+              ``,
+              `TruffleHog found secrets in the **git history** of this repository.`,
+              `These secrets may no longer be in current code, but are still fully`,
+              `readable by anyone who clones this repo.`,
+              ``,
+              `| Field | Value |`,
+              `|---|---|`,
+              `| **Scan scope** | Full repository history (all commits) |`,
+              `| **Mode** | ${verifiedOnly ? '✅ Verified only (confirmed live credentials)' : '⚠️ All detections (including unverified)'} |`,
+              `| **Run** | [View full TruffleHog output](${runUrl}) |`,
+              ``,
+              `### Remediation Steps`,
+              ``,
+              `**Step 1 — Revoke the credential immediately**`,
+              `Do this first, before anything else. Assume the secret is compromised.`,
+              ``,
+              `**Step 2 — Identify affected commits**`,
+              `\`\`\`bash`,
+              `git log --all -p --follow -- path/to/affected/file`,
+              `\`\`\``,
+              ``,
+              `**Step 3 — Rewrite history to remove the secret**`,
+              `Option A (recommended): [git-filter-repo](https://github.com/newren/git-filter-repo)`,
+              `\`\`\`bash`,
+              `pip install git-filter-repo`,
+              `git filter-repo --path path/to/secret/file --invert-paths`,
+              `# or for a string replacement:`,
+              `git filter-repo --replace-text <(echo 'OLD_SECRET==>REDACTED')`,
+              `\`\`\``,
+              ``,
+              `Option B: [BFG Repo Cleaner](https://rtyley.github.io/bfg-repo-cleaner/) (simpler for single files)`,
+              `\`\`\`bash`,
+              `bfg --delete-files secret_file.txt`,
+              `bfg --replace-text passwords.txt`,
+              `\`\`\``,
+              ``,
+              `**Step 4 — Force push and notify**`,
+              `\`\`\`bash`,
+              `git push origin --force --all`,
+              `git push origin --force --tags`,
+              `\`\`\``,
+              `Anyone with a local clone needs to re-clone or run \`git fetch --all\`.`,
+              ``,
+              `**Step 5 — Verify clean**`,
+              `Re-run this workflow manually after cleanup to confirm.`,
+              ``,
+              `> ⚠️ GitHub may cache old versions of files. Contact GitHub Support if you need`,
+              `> the old commits permanently removed from GitHub's servers as well.`,
+            ].join('\n');
+
+            // Check for existing open issue to avoid duplicates
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'historical-secret',
+              state: 'open',
+            });
+
+            if (existing.data.length > 0) {
+              // Add a comment to the existing issue instead of opening a new one
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `## 🔄 New scan on ${new Date().toISOString().split('T')[0]}\n\nSecrets still detected in history. [View run](${runUrl}).\n\n${body}`,
+              });
+              console.log(`Updated existing issue #${existing.data[0].number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🕵️ [HISTORY SCAN] Secrets found in git history — ${new Date().toISOString().split('T')[0]}`,
+                body,
+                labels: ['security', 'critical', 'historical-secret'],
+              });
+            }
+
+      # ── 4. Final status ──────────────────────────────────────────────────────
+      - name: "🚫 Fail job on findings"
+        if: steps.trufflehog.outcome == 'failure'
+        run: |
+          echo "::error::TruffleHog detected secrets in git history."
+          echo "::error::Check the newly created GitHub Issue for detailed remediation steps."
+          exit 1
+
+      - name: "✅ No historical secrets found"
+        if: steps.trufflehog.outcome == 'success'
+        run: |
+          echo "✅ TruffleHog completed — no secrets found in repository history."

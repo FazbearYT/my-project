@@ -1,0 +1,133 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Pre-commit Hook Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# These hooks run LOCALLY on your machine before every `git commit`.
+# They are the fastest feedback loop — issues are caught in milliseconds,
+# before the commit is even created, before anything is pushed, before any
+# GitHub Actions runner spins up.
+#
+# INSTALLATION (one-time setup per machine):
+#   pip install pre-commit
+#   pre-commit install          # installs hooks into .git/hooks/
+#   pre-commit install --hook-type pre-push  # also installs pre-push hooks
+#
+# FIRST RUN (scans all files, not just staged ones):
+#   pre-commit run --all-files
+#
+# UPDATING hooks to latest versions:
+#   pre-commit autoupdate
+#
+# SKIPPING hooks for a single commit (emergency only — use sparingly):
+#   git commit --no-verify -m "wip: ..."
+#   NOTE: The GitHub Actions pipeline will still catch it remotely.
+# ─────────────────────────────────────────────────────────────────────────────
+
+repos:
+  # ── Gitleaks — Secret Detection ────────────────────────────────────────────
+  # Same tool as the CI pipeline. Catches secrets before they ever leave
+  # your machine. This is your most important local hook.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.0
+    hooks:
+      - id: gitleaks
+        name: "🔐 Gitleaks — detect secrets"
+
+  # ── detect-secrets — Complementary Secret Scanner ───────────────────────────
+  # Uses a different detection algorithm (entropy analysis + pattern matching).
+  # Running both Gitleaks AND detect-secrets gives you two independent engines.
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: "🔐 detect-secrets — entropy analysis"
+        args: ["--baseline", ".secrets.baseline"]
+        # First time: run `detect-secrets scan > .secrets.baseline` to create
+        # the baseline file, then commit it. Known false-positives can be
+        # audited and allowed via `detect-secrets audit .secrets.baseline`
+
+  # ── General file hygiene ────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: "🧹 Trim trailing whitespace"
+      - id: end-of-file-fixer
+        name: "🧹 Fix end of file"
+      - id: check-yaml
+        name: "✅ Validate YAML syntax"
+      - id: check-json
+        name: "✅ Validate JSON syntax"
+      - id: check-toml
+        name: "✅ Validate TOML syntax"
+      - id: check-merge-conflict
+        name: "🔀 Check for merge conflict markers"
+      - id: check-added-large-files
+        name: "📦 Block large files"
+        args: ["--maxkb=1000"]   # Blocks files > 1 MB
+      - id: detect-private-key
+        name: "🔐 Detect private keys"    # Extra layer for RSA/EC/DSA keys
+      - id: check-case-conflict
+        name: "✅ Check filename case conflicts"
+      - id: mixed-line-ending
+        name: "🧹 Fix mixed line endings"
+        args: ["--fix=lf"]
+
+  # ── Python-specific ──────────────────────────────────────────────────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff
+        name: "🐍 Ruff — Python linter + security checks"
+        args: ["--select", "E,F,W,S,B,UP", "--fix"]
+        # S = bandit-equivalent security rules (SQL injection, assert in prod, etc.)
+        # B = bugbear (likely bugs and design issues)
+        types: [python]
+      - id: ruff-format
+        name: "🐍 Ruff — Python formatter"
+        types: [python]
+
+  # ── Bandit — Python Security Linter ─────────────────────────────────────────
+  # Bandit specifically targets security anti-patterns in Python:
+  # hardcoded passwords, use of shell=True, weak hash algorithms, etc.
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.9.4
+    hooks:
+      - id: bandit
+        name: "🐍 Bandit — Python security linter"
+        args: ["-c", "pyproject.toml"]   # Configure severity in pyproject.toml
+        types: [python]
+
+  # ── C++ — clang-format ───────────────────────────────────────────────────────
+  # Enforces consistent formatting. Requires clang-format installed locally.
+  # Create a .clang-format file in your repo to configure the style.
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.5
+    hooks:
+      - id: clang-format
+        name: "⚙️ clang-format — C/C++ formatter"
+        types_or: [c, c++]
+
+  # ── Go ───────────────────────────────────────────────────────────────────────
+  - repo: https://github.com/dnephin/pre-commit-golang
+    rev: v0.5.1
+    hooks:
+      - id: go-fmt
+        name: "🐹 gofmt — Go formatter"
+      - id: go-vet
+        name: "🐹 go vet — Go static analysis"
+      - id: go-mod-tidy
+        name: "🐹 go mod tidy — clean go.mod/go.sum"
+
+  # ── Commit message format ────────────────────────────────────────────────────
+  # Enforces Conventional Commits format: type(scope): description
+  # Examples: feat(auth): add JWT validation
+  #           fix(parser): handle null input
+  #           chore(deps): update requests to 2.32.0
+  # This makes automated changelog generation and semantic versioning possible.
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        name: "📝 Conventional commit message"
+        stages: [commit-msg]
+        args: [feat, fix, docs, style, refactor, perf, test, chore, ci, build, revert]

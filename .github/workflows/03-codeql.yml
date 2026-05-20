@@ -1,0 +1,181 @@
+name: "🧬 CodeQL Deep Analysis"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# WHEN IT RUNS:
+#   • Push to develop and master (not feature/* — CodeQL is slow, save it for
+#     integration points)
+#   • PRs targeting master or develop
+#   • Weekly schedule (Wednesday 03:00 UTC) — catches new CVE patterns even
+#     without code changes
+#
+# WHAT IT DOES:
+#   CodeQL is GitHub's own semantic code analysis engine. Unlike pattern-matching
+#   tools (Semgrep), CodeQL builds a full model of your code — call graphs,
+#   data-flow, taint tracking — and queries it for vulnerabilities.
+#
+#   It runs three parallel matrix jobs, one per language:
+#     • cpp    → Buffer overflows, format string bugs, use-after-free, integer
+#                overflows, command injection, path traversal
+#     • python → Injection flaws, insecure deserialization, XSS, SSRF, weak
+#                crypto, unsafe eval/exec
+#     • go     → Injection, SSRF, path traversal, insecure TLS, goroutine leaks
+#
+#   Query suite: security-and-quality (broadest coverage)
+#   Results → SARIF → GitHub Security tab (Code scanning alerts)
+#
+# C++ BUILD NOTE:
+#   CodeQL must observe a real compilation to analyse C++. The autobuild action
+#   handles cmake/make/ninja projects automatically. If your project uses a
+#   non-standard build system, replace the autobuild step with your actual build
+#   commands (see the comment block in the cpp matrix entry below).
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches:
+      - master
+      - develop
+  pull_request:
+    branches:
+      - master
+      - develop
+  schedule:
+    - cron: "0 3 * * 3"  # Every Wednesday at 03:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Detect which languages are actually present in the repo so we don't waste
+  # runner time on absent languages
+  # ═══════════════════════════════════════════════════════════════════════════
+  detect-languages:
+    name: "🔍 Detect languages"
+    runs-on: ubuntu-latest
+    outputs:
+      languages: ${{ steps.detect.outputs.languages }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Detect C++, Python, Go"
+        id: detect
+        run: |
+          LANGS=()
+
+          # C++ — look for any .cpp / .cc / .cxx / .hpp / .h / CMakeLists.txt
+          if find . -type f \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \
+                               -o -name "*.hpp" -o -name "CMakeLists.txt" \
+                               -o -name "Makefile" \) \
+                    ! -path "./.git/*" | grep -q .; then
+            LANGS+=("cpp")
+          fi
+
+          # Python — look for .py files or pyproject.toml
+          if find . -type f \( -name "*.py" -o -name "pyproject.toml" \) \
+                    ! -path "./.git/*" | grep -q .; then
+            LANGS+=("python")
+          fi
+
+          # Go — look for .go files or go.mod
+          if find . -type f \( -name "*.go" -o -name "go.mod" \) \
+                    ! -path "./.git/*" | grep -q .; then
+            LANGS+=("go")
+          fi
+
+          # Build JSON array for matrix
+          JSON=$(printf '%s\n' "${LANGS[@]}" | jq -R . | jq -sc .)
+          echo "languages=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Detected languages: $JSON"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CodeQL analysis — matrix job, one runner per detected language
+  # ═══════════════════════════════════════════════════════════════════════════
+  codeql:
+    name: "🧬 CodeQL — ${{ matrix.language }}"
+    runs-on: ${{ matrix.language == 'cpp' && 'ubuntu-latest' || 'ubuntu-latest' }}
+    needs: detect-languages
+
+    # Skip the matrix entirely if no supported languages were found
+    if: needs.detect-languages.outputs.languages != '[]'
+
+    strategy:
+      fail-fast: false   # Let all language jobs complete even if one fails
+      matrix:
+        language: ${{ fromJson(needs.detect-languages.outputs.languages) }}
+
+    steps:
+      # ── 1. Checkout ─────────────────────────────────────────────────────────
+      - name: "📥 Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Language-specific environment setup ───────────────────────────────
+      - name: "⚙️ Setup Python"
+        if: matrix.language == 'python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "⚙️ Setup Go"
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      # For C++ — install typical build dependencies. Adjust to your project.
+      - name: "⚙️ Setup C++ build environment"
+        if: matrix.language == 'cpp'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build build-essential libssl-dev
+
+      # ── 3. Initialise CodeQL ────────────────────────────────────────────────
+      # queries: security-and-quality covers both security vulnerabilities AND
+      # reliability/quality issues (null dereferences, dead code, etc.)
+      - name: "🧬 Initialize CodeQL"
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+          # Increase memory for large C++ projects if needed:
+          # config: |
+          #   query-filters:
+          #     - exclude:
+          #         problem.severity: recommendation
+
+      # ── 4. Build step (required for C++; autobuild handles Python/Go too) ───
+      # For C++ projects with a standard cmake/make layout, autobuild usually
+      # works. If it doesn't, replace this step with your actual build:
+      #
+      #   - name: "Build"
+      #     run: |
+      #       cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      #       cmake --build build
+      #
+      - name: "🔨 Autobuild"
+        uses: github/codeql-action/autobuild@v3
+
+      # ── 5. Run analysis ─────────────────────────────────────────────────────
+      - name: "🔍 Run CodeQL analysis"
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "codeql-${{ matrix.language }}"
+          # Upload results directly to Security tab
+          upload: true
+          output: "codeql-results-${{ matrix.language }}.sarif"
+
+      # ── 6. Upload SARIF explicitly (belt-and-suspenders) ────────────────────
+      - name: "📤 Upload SARIF → Security tab"
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: "codeql-results-${{ matrix.language }}.sarif"
+          category: "codeql-${{ matrix.language }}"
+        continue-on-error: true  # Don't fail if SARIF was already uploaded above

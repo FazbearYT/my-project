@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependabot Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Dependabot automatically opens Pull Requests when it detects that one of your
+# dependencies has a published security advisory or a newer version available.
+#
+# How it fits into the pipeline:
+#   When Dependabot opens a PR, the 02-sast-sca.yml workflow runs on it
+#   automatically. Trivy re-scans the updated manifest, and the Security Gate
+#   must pass before you merge. So even Dependabot's own suggested updates get
+#   scanned before landing.
+#
+# Configured ecosystems:
+#   • pip       → requirements.txt, Pipfile, pyproject.toml (Python)
+#   • gomod     → go.mod (Go)
+#   • github-actions → the action versions in your workflow files themselves
+#
+# C++ (Conan / vcpkg): Dependabot does not yet support these natively.
+#   Trivy handles CVE detection for C++ deps in the SCA workflow instead.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 2
+
+updates:
+  # ── Python (pip) ─────────────────────────────────────────────────────────
+  - package-ecosystem: "pip"
+    directory: "/"          # Root of repo; add more entries if you have nested
+    schedule:               # virtualenvs or service subdirectories
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    # Target develop, not master — keeps update PRs out of your stable branch
+    target-branch: "develop"
+    labels:
+      - "dependencies"
+      - "python"
+      - "security"
+    # Group all non-major Python updates into one PR to reduce noise
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # ── Go (go modules) ──────────────────────────────────────────────────────
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    target-branch: "develop"
+    labels:
+      - "dependencies"
+      - "go"
+      - "security"
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
+  # ── GitHub Actions (keep action versions up to date) ─────────────────────
+  # This updates the `uses: owner/action@vX` pins in your workflow files.
+  # Outdated actions can themselves be a supply-chain risk.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 5
+    target-branch: "develop"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      actions-all:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore(actions)"
+      include: "scope"
