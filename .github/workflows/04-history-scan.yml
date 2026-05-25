@@ -57,7 +57,7 @@ jobs:
     steps:
       # ── 1. Full history checkout ─────────────────────────────────────────────
       - name: "📥 Checkout full repository history"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0  # MUST be 0 — partial checkout misses historical commits
 
