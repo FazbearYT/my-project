@@ -82,7 +82,7 @@ jobs:
       # ── 3. Create GitHub Issue if findings exist ─────────────────────────────
       - name: "🚨 Open issue — historical secrets found"
         if: steps.trufflehog.outcome == 'failure'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
